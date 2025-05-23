@@ -1,0 +1,16 @@
+discord.py
+alive-progress
+discord-sentry-reporting
+python-dotenv
+gtts
+openai
+sentry-sdk
+gspread
+oauth2client
+roblox
+psutil
+pytz
+Flask
+peewee
+requests
+jishaku
