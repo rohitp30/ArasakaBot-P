@@ -91,7 +91,7 @@ class ArasakaSlashTree(app_commands.CommandTree):
 
 class ArasakaBot(commands.Bot):
     """
-    Generates a LosPollos Instance.
+    Generates a Arasaka Instance.
     """
 
     def __init__(self, uptime: time.time):
