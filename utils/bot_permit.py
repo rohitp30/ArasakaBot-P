@@ -15,10 +15,9 @@ from core.checks import (
     slash_is_bot_admin_4,
     slash_is_bot_admin,
 )
-from core.common import get_host_dir
+from core.common import get_host_dir, LoggingChannels
 
 load_dotenv()
-guild = 1143709921326682182
 
 def get_extensions():
     extensions = ["jishaku"]
@@ -41,11 +40,11 @@ class CoreBotConfig(commands.Cog):
     PM = app_commands.Group(
         name="permit",
         description="Configure the bots permit settings.",
-        guild_ids=[guild]
+        guild_ids=[LoggingChannels.guild]
     )
 
     @app_commands.command(description="Sync the bots code from GitHub")
-    @app_commands.guilds(guild)
+    @app_commands.guilds(LoggingChannels.guild)
     @slash_is_bot_admin_2()
     async def gitpull(
         self,

@@ -21,13 +21,13 @@ from discord.ext import commands
 from discord_sentry_reporting import use_sentry
 from dotenv import load_dotenv
 from gtts import gTTS
-from openai import OpenAI
 from sentry_sdk.integrations.flask import FlaskIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.integrations.aiohttp import AioHttpIntegration
 
 from core import database
 from core.checks import is_botAdmin2
-from core.common import get_extensions, PromotionButtons, ReviewInactivityView
+from core.common import get_extensions, PromotionButtons, ReviewInactivityView, OpenAIClient
 from core.logging_module import get_log
 from core.special_methods import (
     initializeDB,
@@ -39,15 +39,10 @@ faulthandler.enable()
 
 logger = logging.getLogger("discord")
 logger.setLevel(logging.INFO)
-
 _log = get_log(__name__)
 _log.info("Starting ArasakaBot...")
 
-client = OpenAI(
-    # This is the default and can be omitted
-    api_key=os.getenv("OPENAI_API"),
-)
-
+client = OpenAIClient().client
 
 async def officer_check(guild: discord.Guild, user: discord.User, interaction: discord.Interaction):
     Officer_Corps = discord.utils.get(interaction.guild.roles, id=1143736564002861146)
@@ -221,7 +216,9 @@ if os.getenv("DSN_SENTRY") is not None:
         _experiments={
             "profiles_sample_rate": 1.0,
         },
-        integrations=[FlaskIntegration(), sentry_logging],
+        send_default_pii=True,  # capture user context pls
+        enable_tracing=True,  # turn on performance tracing
+        integrations=[AioHttpIntegration(), FlaskIntegration(), sentry_logging],
     )
 
 initializeDB(bot)

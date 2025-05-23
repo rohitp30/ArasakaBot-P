@@ -7,8 +7,6 @@ import sys
 from datetime import datetime
 from difflib import get_close_matches
 from pathlib import Path
-from tarfile import data_filter
-import pytz
 from threading import Thread
 from typing import (
     Any,
@@ -21,12 +19,14 @@ from typing import (
 
 import discord
 import gspread
+import pytz
 import requests
-from discord import ButtonStyle, SelectOption, ui, Button
+from discord import ui, Button
 from discord.ext import commands
 from discord.ui import View
 from dotenv import load_dotenv
 from oauth2client.service_account import ServiceAccountCredentials
+from openai import OpenAI
 from roblox import Client
 
 from core import database
@@ -41,151 +41,84 @@ load_dotenv()
 CoroutineType = Callable[[Any, Any], Awaitable[Any]]
 _log = get_log(__name__)
 
-xp_log_ch = 1224907141060628532
-officer_role_id = 1143736564002861146
-log_ch = 1145110858272346132
-guild = 1143709921326682182
-
-rank_xp_thresholds = {
-    'Initiate': 0,  # A-1
-    'Junior Operative': 15,  # A-2
-    'Operative': 30,  # A-3
-    'Specialist': 50,  # A-4
-    'Senior Agent': 80,  # A-5
-    'Sergeant': 120,  # N-1
-    #'Command Sergeant': 150,  # N-2
-    #'Commander': 200,  # N-3
-    # ... continue as needed
-}
-
-status_dict = {
-    "IN": "on an inactivity notice",
-    "EX": "exempt from receiving XP",
-    "RH": "a recent hire"
-}
-
-next_rank = {
-    'Initiate': 'Junior Operative',
-    'Junior Operative': 'Operative',
-    'Operative': 'Specialist',
-    'Specialist': 'Senior Agent',
-    'Senior Agent': 'Sergeant',
-    'Sergeant': 'RL',
-    #'Command Sergeant': 'Commander',
-    #'Commander': '🔒'
-}
-
-
-def get_extensions():
-    extensions = ["jishaku"]
-    if sys.platform == "win32" or sys.platform == "cygwin":
-        dirpath = "\\"
-    else:
-        dirpath = "/"
-
-    for file in Path("utils").glob("**/*.py"):
-        if "!" in file.name or "DEV" in file.name or "view_models" in file.name:
-            continue
-        extensions.append(str(file).replace(dirpath, ".").replace(".py", ""))
-    return extensions
-
-
-class SelectMenuHandler(ui.Select):
-    """Adds a SelectMenu to a specific message and returns it's value when option selected.
-    Usage:
-        To do something after the callback function is invoked (the button is pressed), you have to pass a
-        coroutine to the class. IMPORTANT: The coroutine has to take two arguments (discord.Interaction, discord.View)
-        to work.
-    """
-
+class SheetsClient:
     def __init__(
-            self,
-            options: List[SelectOption],
-            custom_id: Union[str, None] = None,
-            place_holder: Union[str, None] = None,
-            max_values: int = 1,
-            min_values: int = 1,
-            disabled: bool = False,
-            select_user: Union[discord.Member, discord.User, None] = None,
-            roles: List[discord.Role] = None,
-            interaction_message: Union[str, None] = None,
-            ephemeral: bool = True,
-            coroutine: CoroutineType = None,
-            view_response=None,
-            modal_response=None,
+        self,
+        creds_path: str = "ArasakaBotCreds.json",
+        sheet_name: str = "Arasaka Corp. Database V2",
     ):
-        """
-        Parameters:
-            options: List of discord.SelectOption
-            custom_id: Custom ID of the view. Default to None.
-            place_holder: Placeholder string for the view. Default to None.
-            max_values Maximum values that are selectable. Default to 1.
-            min_values: Minimum values that are selectable. Default to 1.
-            disabled: Whenever the button is disabled or not. Default to False.
-            select_user: The user that can perform this action, leave blank for everyone. Defaults to None.
-            interaction_message: The response message when pressing on a selection. Default to None.
-            ephemeral: Whenever the response message should only be visible for the select_user or not. Default to True.
-            coroutine: A coroutine that gets invoked after the button is pressed. If None is passed, the view is stopped after the button is pressed. Default to None.
-            view_response: The response of the view. Default to None.
-            modal_response: The response of the modal. Default to None.
-        """
+        # set up Google Sheets API
+        scope = [
+            "https://spreadsheets.google.com/feeds",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        creds = ServiceAccountCredentials.from_json_keyfile_name(creds_path, scope)
+        self.client = gspread.authorize(creds)
+        # open the workbook and grab the first worksheet (or by index)
+        self.sheet = self.client.open(sheet_name).sheet1
 
-        self.options_ = options
-        self.custom_id_ = custom_id
-        self.select_user = select_user
-        self.roles = roles
-        self.disabled_ = disabled
-        self.placeholder_ = place_holder
-        self.max_values_ = max_values
-        self.min_values_ = min_values
-        self.interaction_message_ = interaction_message
-        self.ephemeral_ = ephemeral
-        self.coroutine = coroutine
-        self.view_response = view_response
-        self.modal_response = modal_response
 
-        if self.custom_id_:
-            super().__init__(
-                options=self.options_,
-                placeholder=self.placeholder_,
-                custom_id=self.custom_id_,
-                disabled=self.disabled_,
-                max_values=self.max_values_,
-                min_values=self.min_values_,
-            )
-        else:
-            super().__init__(
-                options=self.options_,
-                placeholder=self.placeholder_,
-                disabled=self.disabled_,
-                max_values=self.max_values_,
-                min_values=self.min_values_,
-            )
+class OpenAIClient:
+    def __init__(self, api_key: str | None = None):
+        key = api_key or os.getenv("OPENAI_API")
+        if not key:
+            raise RuntimeError("OPENAI_API environment variable not set")
+        # wrap the OpenAI client
+        self.client = OpenAI(api_key=key)
 
-    async def callback(self, interaction: discord.Interaction):
-        if self.select_user in [None, interaction.user] or any(
-                role in interaction.user.roles for role in self.roles
-        ):
 
-            self.view.value = self.values[0]
-            self.view_response = self.values[0]
+class LoggingChannels:
+    xp_log_ch = 1224907141060628532
+    officer_role_id = 1143736564002861146
+    log_ch = 1145110858272346132
+    guild = 1143709921326682182
 
-            if self.modal_response:
-                await interaction.response.send_modal(self.modal_response)
 
-            elif self.interaction_message_:
-                await interaction.response.send_message(
-                    content=self.interaction_message_, ephemeral=self.ephemeral_
-                )
+class ArasakaRanks:
+    rank_xp_thresholds = {
+        'Initiate': 0,  # A-1
+        'Junior Operative': 15,  # A-2
+        'Operative': 30,  # A-3
+        'Specialist': 50,  # A-4
+        'Senior Agent': 80,  # A-5
+        'Sergeant': 120,  # N-1
+        # 'Command Sergeant': 150,  # N-2
+        # 'Commander': 200,  # N-3
+        # ... continue as needed
+    }
 
-            if self.coroutine is not None:
-                await self.coroutine(interaction, self.view)
-            else:
-                self.view.stop()
-        else:
-            await interaction.response.send_message(
-                content="You're not allowed to interact with that!", ephemeral=True
-            )
+    status_dict = {
+        "IN": "on an inactivity notice",
+        "EX": "exempt from receiving XP",
+        "RH": "a recent hire"
+    }
+
+    next_rank = {
+        'Initiate': 'Junior Operative',
+        'Junior Operative': 'Operative',
+        'Operative': 'Specialist',
+        'Specialist': 'Senior Agent',
+        'Senior Agent': 'Sergeant',
+        'Sergeant': 'RL',
+        # 'Command Sergeant': 'Commander',
+        # 'Commander': '🔒'
+    }
+
+    quota_dict = {
+        "Initiate": 6,
+        "Junior Operative": 6,
+        "Operative": 6,
+        "Specialist": 6,
+        "Senior Agent": 6,
+        "Sergeant": 4,
+        "Sergeant Major": 4,
+        "Commander": 4,
+        "Corporate Officer on Trial": 4,
+        "Junior Corporate Field Officer": 4,
+        "Corporate Field Officer": 4,
+        "Senior Corporate Field Officer": 3,
+        "Chief Corporate Field Officer": 2,
+    }
 
 
 class ButtonHandler(ui.Button):
@@ -281,6 +214,20 @@ class ButtonHandler(ui.Button):
             await interaction.response.send_message(
                 content="You're not allowed to interact with that!", ephemeral=True
             )
+
+
+def get_extensions():
+    extensions = ["jishaku"]
+    if sys.platform == "win32" or sys.platform == "cygwin":
+        dirpath = "\\"
+    else:
+        dirpath = "/"
+
+    for file in Path("utils").glob("**/*.py"):
+        if "!" in file.name or "DEV" in file.name or "view_models" in file.name:
+            continue
+        extensions.append(str(file).replace(dirpath, ".").replace(".py", ""))
+    return extensions
 
 
 async def force_restart(ctx, host_dir):
@@ -406,96 +353,6 @@ class Colors:
     light_purple = 0xD6B4E8
     mod_blurple = 0x4DBEFF
     ss_blurple = 0x7080FA
-
-
-class MainID:
-    """
-    Items relating to the main server
-    """
-    g_main = 1020763482183971029
-
-
-class TechID:
-    """
-    Items relating to the IT Server
-    """
-
-    # *** Tech ID Guild ***
-    g_main = 1020763482183971029
-
-    # *** Channels ***
-    ch_tracebacks = 1030885144573259847
-
-
-class Emoji:
-    """
-    Emojis to use for the bot.
-    """
-
-    space = "<:space:834967357632806932>"
-    confirm = "<:confirm:860926261966667806>"
-    deny = "<:deny:860926229335375892>"
-    question = "<:question:861794223027519518>"
-    warn = "<:warn:860926255443345409>"
-    lock = "<:lock:860926195087835137>"
-    unlock = "<:unlock:860926246937427989>"
-    time = "<:time:860926238737825793>"
-    red_issue = "<:issue:860587949263290368>"
-    archive = "<:file:861794167578689547>"
-    cycle = "<:cycle:861794132585611324>"
-    calender = "<:calendar:861794038739238943>"
-    add_gear = "<:add5x:862875088311025675>"
-    minus_gear = "<:minusgear:862875088217702421>"
-    invalid_channel = "<:invalidchannel:862875088361619477>"
-    barrow = "<:SS:865715703545069568>"
-    person = "<:person:883771751127990333>"
-    activity = "<:note:883771751190908989>"
-    check = "<:success:834967474101420032>"
-    cancel = "<:cancel:834967460075012106>"
-    arrow = "<:rightDoubleArrow:834967375735422996>"
-    mute = "<:mute:834967579264155658>"
-    ban = "<:ban:834967435642929162>"
-    reason = "<:activity:834968852558249999>"
-    profile = "<:profile:835213199070593035>"
-    creation = "<:creation:835213216299745291>"
-    date = "<:thewickthing:835213229294223400>"
-    discordLogo = "<:discord:812757175465934899>"
-    discordLoad = "<a:Discord:866408537503694869>"
-    pythonLogo = "<:python:945410067887435846>"
-    javascriptLogo = "<:javascript:945410211752054816>"
-    blob_amused = "<:blobamused:895125015719194655>"
-    mod_shield = "<:modshield:957316876168474644>"
-    loadingGIF = "<a:Loading:904192577094426626>"
-    loadingGIF2 = "<a:Loading:905563298089541673>"
-    gsuite_logo = "<:gsuitelogo:932034284724834384>"
-    turtle_smirk = "<:TurtleSmirk:879119619737124914>"
-
-    # SS Emojis
-    schoolsimplified = "<:SchoolSimplified:830689765329993807>"
-    ss_arrow = "<:SS:865715703545069568>"
-    human_resources = "<:SS_HumanResources:907766589972181043>"
-    timmyBook = "<:timmy_book:933043045493010453>"
-    timmyTutoring = "<:tutoring:933043045950164992>"
-
-
-class Others:
-    """
-    Other things to use for the bot. (Images, characters, etc.)
-    """
-
-    ss_logo_png = "https://cdn.discordapp.com/attachments/1021587961579573258/1029759366385127455/Los_Pollos_Robloxian.png?size=4096"
-    error_png = "https://icons.iconarchive.com/icons/paomedia/small-n-flat/1024/sign-error-icon.png"
-    nitro_png = "https://i.imgur.com/w9aiD6F.png"
-
-    # *** Timmy Images ***
-    timmy_dog_png = "https://cdn.discordapp.com/attachments/1021587961579573258/1029759366385127455/Los_Pollos_Robloxian.png?size=4096"
-    timmy_laptop_png = "https://cdn.discordapp.com/attachments/1021587961579573258/1029759366385127455/Los_Pollos_Robloxian.png?size=4096"
-    timmy_happy_png = "https://cdn.discordapp.com/attachments/1021587961579573258/1029759366385127455/Los_Pollos_Robloxian.png?size=4096"
-    timmy_book_png = "https://cdn.discordapp.com/attachments/1021587961579573258/1029759366385127455/Los_Pollos_Robloxian.png?size=4096"
-    timmy_teacher_png = "https://cdn.discordapp.com/attachments/1021587961579573258/1029759366385127455/Los_Pollos_Robloxian.png?size=4096"
-
-    space_character = "　"
-    ticket_inactive_time = 1440
 
 
 def get_host_dir():
@@ -843,8 +700,8 @@ async def process_xp_updates(interaction, sheet, usernames, reason, get_attendee
         user_row = cell.row
         weekly_points, total_points = sheet.cell(user_row, 8).value, sheet.cell(user_row, 9).value
 
-        if weekly_points in status_dict:
-            status = status_dict[weekly_points]
+        if weekly_points in ArasakaRanks.status_dict:
+            status = ArasakaRanks.status_dict[weekly_points]
             console_output.append(f"- {line_number}: Warning: {username} is {status}. (WP will not be updated, only TP will be)")
 
         if format == 1:
@@ -919,7 +776,7 @@ async def process_xp_updates(interaction, sheet, usernames, reason, get_attendee
             except Exception as e:
                 print(e)
 
-    xp_channel = await interaction.client.fetch_channel(xp_log_ch)
+    xp_channel = await interaction.client.fetch_channel(LoggingChannels.xp_log_ch)
     await xp_channel.send(embed=embed)
 
     if get_attendees:
@@ -995,7 +852,7 @@ def make_form(host_username, event_type_opt, proof_upload, bot_ref, sheet, retur
             embed.set_footer(
                 text=f"Timestamp: {interaction.created_at.strftime('%Y-%m-%d %H:%M:%S')} UTC")
 
-            event_log_channel = await bot_ref.fetch_channel(log_ch)  # log_ch
+            event_log_channel = await bot_ref.fetch_channel(LoggingChannels.log_ch)  # log_ch
             await event_log_channel.send(embed=embed)
 
             # convert the attendees to a list
@@ -1150,7 +1007,7 @@ class RankHierarchy:
 
     def discord_to_roblox(self, discord_id, group):
         response = requests.get(
-            f'https://api.blox.link/v4/public/guilds/{guild}/discord-to-roblox/{discord_id}',
+            f'https://api.blox.link/v4/public/guilds/{LoggingChannels.guild}/discord-to-roblox/{discord_id}',
             headers={"Authorization": os.getenv("BLOXLINK_TOKEN")})
         if response.status_code == 200:
             return group.get_member(response.json()['robloxID'])
@@ -1732,28 +1589,3 @@ async def update_roles(bot, sheet):
         else:
             # If the member is not in the server, you might choose to delete or mark the row
             print(f"{username} is not in the server")
-
-
-async def handle_rewards(message, count):
-    channel = message.channel
-    if count == 100:
-        await channel.send(f"Congratulations! Milestone reached: 100. Reward: <@&1215483692877611018>")
-    elif count == 250:
-        await channel.send("Congratulations! Milestone reached: 250. Reward: 4 WP giveaway.")
-    elif count == 500:
-        await channel.send(f"Congratulations! Milestone reached: 500. Reward: <@&1234321833000702034> Giveaway.")
-    elif count == 1000:
-        await channel.send(f"Congratulations! Milestone reached: 1000. Reward: <@&1234321833000702034> to all who contributed.")
-    elif count == 10000:
-        await channel.send("Congratulations! Milestone reached: 10000. Reward: NO QUOTA FOR EVERYONE FOR TWO WEEKS!")
-    elif count == 100000:
-        await channel.send("Congratulations! Milestone reached: 100000. Reward: [REDACTED]")
-
-
-def modify_table(new_number, plus_one=False):
-    q = database.LastCount.select().where(database.LastCount.id == 1).get()
-    if plus_one:
-        q.last_number = new_number + 1
-    else:
-        q.last_number = new_number
-    q.save()

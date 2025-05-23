@@ -1,11 +1,21 @@
 # TODO
-- Blacklist command.
-...some more idk at the moment
 
-# DONE
-- /promote should tell if they qualify for the promotion.
-- Officer Quota Reset Command
-- Float XP Values
-- Update the /promotion command to update the sheet too.
-- Add a ref to #promo-req in /xp view
-- Wrap up the Discharge Command
+## Sentry
+- fully integrate sentry with commands
+- feedback command?
+- add span support to sub-processes (functions)
+- add breadcrumb support
+- add user context support
+
+## Commands/Cleanup
+- remove unused commands
+- remove unused db tables
+- clean up main it looks ugly again
+- port RobloxClient to a class
+- remove bot permit? not really needed anymore
+- system status command & maintenance mode
+- revamp discord ↔ roblox profile linking (it's a mess rn and idek how it's not bricked yet)
+
+
+...some more ideas that've escaped me
+

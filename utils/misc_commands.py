@@ -10,9 +10,10 @@ from discord.ext import commands
 from core import database
 from core.checks import is_botAdmin4, slash_is_bot_admin_3
 from core.logging_module import get_log
+from core.common import LoggingChannels
 
 _log = get_log(__name__)
-guild = 1143709921326682182
+
 class MiscCMD(commands.Cog):
     def __init__(self, bot: "ArasakaCorpBot"):
         self.bot: "ArasakaCorpBot" = bot
@@ -54,7 +55,7 @@ class MiscCMD(commands.Cog):
         await interaction.response.send_message(embed=pingembed)
 
     @app_commands.command()
-    @app_commands.guilds(guild)
+    @app_commands.guilds(LoggingChannels.guild)
     @slash_is_bot_admin_3()
     async def say(self, interaction: discord.Interaction, message: str):
         NE = database.AdminLogging.create(
@@ -75,7 +76,7 @@ class MiscCMD(commands.Cog):
         await ctx.send(message)
 
     @app_commands.command(name="direct-message", description="DM a user")
-    @app_commands.guilds(guild)
+    @app_commands.guilds(LoggingChannels.guild)
     @slash_is_bot_admin_3()
     async def dm(self, interaction: discord.Interaction, user: discord.Member, message: str):
         NE = database.AdminLogging.create(
