@@ -7,7 +7,6 @@ from sentry_sdk import start_transaction
 
 from core import database
 from core.common import (
-    get_user_xp_data, retrieve_discord_user,
     ArasakaRanks, SheetsClient
 )
 from core.logging_module import get_log
@@ -198,7 +197,7 @@ class EventViewing(commands.Cog):
             embed.add_field(name="Current Rank", value=current_rank_full_name, inline=False)
             embed.add_field(name="Next Rank", value=next_rank_name, inline=True)
             if user_data["division"] != "N/A":
-                embed.add_field(name="Division", value=f"**{user_data["division"]}**", inline=True)
+                embed.add_field(name="Division", value=f"**{user_data['division']}**", inline=True)
             embed.add_field(name="Progress", value=progress_bar, inline=False)
             embed.add_field(name="Met Quota?", value=quota, inline=False)
             if promoted:
