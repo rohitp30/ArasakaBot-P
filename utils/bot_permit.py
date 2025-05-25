@@ -1,8 +1,4 @@
-import subprocess
-import sys
 from pathlib import Path
-from threading import Thread
-from typing import Literal
 
 import discord
 from discord import app_commands
@@ -11,14 +7,12 @@ from dotenv import load_dotenv
 
 from core import database
 from core.checks import (
-    slash_is_bot_admin_2,
     slash_is_bot_admin_4,
     slash_is_bot_admin,
 )
-from core.common import get_host_dir
+from core.common import LoggingChannels
 
 load_dotenv()
-guild = 1143709921326682182
 
 def get_extensions():
     extensions = ["jishaku"]
@@ -41,97 +35,8 @@ class CoreBotConfig(commands.Cog):
     PM = app_commands.Group(
         name="permit",
         description="Configure the bots permit settings.",
-        guild_ids=[guild]
+        guild_ids=[LoggingChannels.guild]
     )
-
-    @app_commands.command(description="Sync the bots code from GitHub")
-    @app_commands.guilds(guild)
-    @slash_is_bot_admin_2()
-    async def gitpull(
-        self,
-        interaction: discord.Interaction,
-        version: str,
-        mode: Literal["-a", "-c"] = "-a",
-        sync_commands: bool = False,
-    ) -> None:
-        """
-        This should only be used on 'main' (development).
-        Using this command will checkout directly on 'main' and won't be stable anymore.
-        """
-        output = ""
-
-        hostDir = get_host_dir()
-        if not hostDir == "/home/timmya":
-            return await interaction.response.send_message(
-                "Host directory is not 'oneimited'."
-                "\nSomeone else is currently hosting the bot."
-            )
-
-        branch = "origin/main"
-        directory = "LosPollosBot"
-
-        try:
-            p = subprocess.run(
-                "git fetch --all",
-                shell=True,
-                text=True,
-                capture_output=True,
-                check=True,
-            )
-            output += p.stdout
-        except Exception as e:
-            await interaction.response.send_message(
-                f"⛔️ Unable to fetch the Current Repo Header!\n**Error:**\n{e}"
-            )
-        try:
-            p = subprocess.run(
-                f"git reset --hard {branch}",
-                shell=True,
-                text=True,
-                capture_output=True,
-                check=True,
-            )
-            output += p.stdout
-        except Exception as e:
-            await interaction.response.send_message(
-                f"⛔️ Unable to apply changes!\n**Error:**\n{e}"
-            )
-
-        embed = discord.Embed(
-            title="GitHub Local Reset",
-            description=f"Local Files changed to match {branch}",
-            color=discord.Color.brand_green(),
-        )
-        embed.add_field(name="Shell Output", value=f"```shell\n$ {output}\n```")
-        if mode == "-a":
-            embed.set_footer(text="Attempting to restart the bot...")
-        elif mode == "-c":
-            embed.set_footer(text="Attempting to reload cogs...")
-
-        await interaction.response.send_message(embed=embed)
-
-        if mode == "-a":
-            await self._force_restart(interaction, directory)
-        elif mode == "-c":
-            try:
-                embed = discord.Embed(
-                    title="Cogs - Reload",
-                    description="Reloaded all cogs.",
-                    color=discord.Color.brand_green(),
-                )
-                for extension in get_extensions():
-                    await self.bot.reload_extension(extension)
-                return await interaction.channel.send(embed=embed)
-            except commands.ExtensionError:
-                embed = discord.Embed(
-                    title="Cogs - Reload",
-                    description="Failed to reload cogs.",
-                    color=discord.Color.brand_red(),
-                )
-                return await interaction.channel.send(embed=embed)
-
-        if sync_commands:
-            await self.bot.tree.sync()
 
     @PM.command(description="Lists all permit levels and users.")
     @slash_is_bot_admin()
@@ -270,61 +175,6 @@ class CoreBotConfig(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
         database.db.close()
-
-    @staticmethod
-    async def _force_restart(interaction: discord.Interaction, host_dir):
-        p = subprocess.run(
-            "git status -uno", shell=True, text=True, capture_output=True, check=True
-        )
-
-        embed = discord.Embed(
-            title="Restarting...",
-            description="Doing GIT Operation (1/3)",
-            color=discord.Color.brand_green(),
-        )
-        embed.add_field(
-            name="Checking GIT (1/3)",
-            value=f"**Git Output:**\n```shell\n{p.stdout}\n```",
-        )
-
-        msg = await interaction.channel.send(embed=embed)
-        try:
-
-            result = subprocess.run(
-                f"cd && cd {host_dir}",
-                shell=True,
-                text=True,
-                capture_output=True,
-                check=True,
-            )
-            theproc = subprocess.Popen([sys.executable, "main.py"])
-
-            runThread = Thread(target=theproc.communicate)
-            runThread.start()
-
-            embed.add_field(
-                name="Started Environment and Additional Process (2/3)",
-                value="Executed `source` and `nohup`.",
-                inline=False,
-            )
-            await msg.edit(embed=embed)
-
-        except Exception as e:
-            embed = discord.Embed(
-                title="Operation Failed", description=e, color=discord.Color.brand_red()
-            )
-            embed.set_footer(text="Main bot process will be terminated.")
-
-            await interaction.channel.send(embed=embed)
-
-        else:
-            embed.add_field(
-                name="Killing Old Bot Process (3/3)",
-                value="Executing `sys.exit(0)` now...",
-                inline=False,
-            )
-            await msg.edit(embed=embed)
-            sys.exit(0)
 
 
 async def setup(bot):

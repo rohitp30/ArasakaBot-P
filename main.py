@@ -1,10 +1,10 @@
 """
-Copyright (C) SpaceTurtle0 - All Rights Reserved
+Copyright (C) rohitp30 - All Rights Reserved
  * Permission is granted to use this application as a code reference for educational purposes.
- * Written by SpaceTurtle#2587, October 2022
+ * Written by TriageSpace, October 2022
 """
 
-__author__ = "SpaceTurtle#2587"
+__author__ = "TriageSpace"
 __author_email__ = "null"
 __project__ = "Arasaka Discord Bot"
 
@@ -20,18 +20,17 @@ from discord import app_commands, Message
 from discord.ext import commands
 from discord_sentry_reporting import use_sentry
 from dotenv import load_dotenv
-from gtts import gTTS
-from openai import OpenAI
+import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
 from sentry_sdk.integrations.logging import LoggingIntegration
+from sentry_sdk.integrations.aiohttp import AioHttpIntegration
 
 from core import database
-from core.checks import is_botAdmin2
-from core.common import get_extensions, PromotionButtons, ReviewInactivityView
+from core.common import get_extensions
 from core.logging_module import get_log
 from core.special_methods import (
     initializeDB,
-    on_ready_, on_command_error_, on_message_,
+    on_ready_, on_command_error_, on_message_, DeleteView,
 )
 
 load_dotenv()
@@ -39,14 +38,8 @@ faulthandler.enable()
 
 logger = logging.getLogger("discord")
 logger.setLevel(logging.INFO)
-
 _log = get_log(__name__)
 _log.info("Starting ArasakaBot...")
-
-client = OpenAI(
-    # This is the default and can be omitted
-    api_key=os.getenv("OPENAI_API"),
-)
 
 
 async def officer_check(guild: discord.Guild, user: discord.User, interaction: discord.Interaction):
@@ -79,14 +72,44 @@ class ArasakaSlashTree(app_commands.CommandTree):
                 "You have been blacklisted from using commands!", ephemeral=True
             )
             return False
+
+        # Check if maintenance mode is enabled
+        maintenance_check = database.MaintenanceMode.select().where(database.MaintenanceMode.id == 1)
+        if not maintenance_check.exists():
+            query = database.MaintenanceMode.create(enabled=False, reason="No reason provided.")
+        else:
+            query = maintenance_check.get()
+
+        if query.enabled:
+            # Get admin level 4 users (owners)
+            admin_ids = []
+            query = database.Administrators.select().where(
+                database.Administrators.TierLevel >= 4
+            )
+            for admin in query:
+                admin_ids.append(admin.discordID)
+
+            # If user is not an owner and maintenance mode is enabled, reject the interaction
+
+            if interaction.user.id not in admin_ids:
+                embed = discord.Embed(
+                    title="Maintenance Mode",
+                    description="The bot is currently in maintenance mode. Only bot owners can use commands at this time.",
+                    color=discord.Color.red()
+                )
+                embed.add_field(name="Information", value=f"Maintenance Started: {discord.utils.format_dt(maintenance_check.start_time, style='R')}\nNotes: {maintenance_check.reason}\n\nIf you need to use the bot immediately, please contact Triage.")
+                embed.set_footer(text="Please check back later.")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return False
+
         return True
 
     async def on_error(
             self, interaction: discord.Interaction, error: app_commands.AppCommandError
     ):
         print(error)
-        # await on_app_command_error_(self.bot, interaction, error)
-        raise error
+        from core.special_methods import on_app_command_error_
+        await on_app_command_error_(self.bot, interaction, error)
 
 
 class ArasakaBot(commands.Bot):
@@ -107,12 +130,6 @@ class ArasakaBot(commands.Bot):
         self.help_command = None
         #self.add_check(self.check)
         self._start_time = uptime
-
-        q = database.LastCount.select().where(database.LastCount.id == 1)
-        if not q.exists():
-            database.LastCount.create(last_number=0, last_counted_by=0)
-        self.current_count = database.LastCount.get(id=1).last_number
-        self.last_counter = database.LastCount.get(id=1).last_counted_by
 
     async def on_ready(self):
         await on_ready_(self)
@@ -137,10 +154,7 @@ class ArasakaBot(commands.Bot):
                 except commands.ExtensionNotFound:
                     raise commands.ExtensionNotFound(ext)
                 bar()
-
-            # add persistence view button PromotionButtons
-            bot.add_view(PromotionButtons(bot))
-            bot.add_view(ReviewInactivityView(bot))
+        self.add_view(DeleteView())
 
     async def is_owner(self, user: discord.User):
         """admin_ids = []
@@ -198,6 +212,7 @@ bot = ArasakaBot(time.time())
 @bot.event
 async def on_interaction(interaction: discord.Interaction):
     if interaction.type == discord.InteractionType.application_command:
+        # Log command analytics to database
         database.CommandAnalytics.create(
             command=interaction.command.name,
             guild_id=interaction.guild.id,
@@ -205,6 +220,54 @@ async def on_interaction(interaction: discord.Interaction):
             date=datetime.now(),
             command_type="slash",
         ).save()
+
+        # Set user context for Sentry
+        sentry_sdk.set_user(None)
+        sentry_sdk.set_user({"id": interaction.user.id, "username": interaction.user.name})
+        sentry_sdk.set_tag("command", interaction.command.name)
+
+        # Extract command options for breadcrumb
+        options = {}
+        if hasattr(interaction, 'data') and 'options' in interaction.data:
+            for option in interaction.data['options']:
+                if 'value' in option:
+                    options[option['name']] = option['value']
+                elif 'options' in option:
+                    # Handle subcommands
+                    for suboption in option['options']:
+                        if 'value' in suboption:
+                            options[suboption['name']] = suboption['value']
+
+        # Add command execution breadcrumb
+        command_name = interaction.command.name if interaction.command else "Unknown"
+        command_args = " ".join([f"{k}={v}" for k, v in options.items()]) if options else ""
+
+        sentry_sdk.add_breadcrumb(
+            category="slash_command",
+            message=f"Slash command executed: {command_name} {command_args}".strip(),
+            level="info",
+            data={
+                "command": command_name,
+                "options": options,
+                "guild_id": interaction.guild.id if interaction.guild else None,
+                "channel_id": interaction.channel.id if interaction.channel else None,
+            }
+        )
+
+        # Set command context
+        sentry_sdk.set_context(
+            "slash_command",
+            {
+                "name": command_name,
+                "qualified_name": interaction.command.qualified_name if hasattr(interaction.command, 'qualified_name') else command_name,
+                "guild": interaction.guild.name if interaction.guild else "DM",
+                "guild_id": interaction.guild.id if interaction.guild else None,
+                "channel": interaction.channel.name if interaction.channel else "Unknown",
+                "channel_id": interaction.channel.id if interaction.channel else None,
+                "user": f"{interaction.user.name}#{interaction.user.discriminator}",
+                "user_id": interaction.user.id,
+            },
+        )
 
 
 if os.getenv("DSN_SENTRY") is not None:
@@ -221,117 +284,12 @@ if os.getenv("DSN_SENTRY") is not None:
         _experiments={
             "profiles_sample_rate": 1.0,
         },
-        integrations=[FlaskIntegration(), sentry_logging],
+        send_default_pii=True,  # capture user context pls
+        enable_tracing=True,  # turn on performance tracing
+        integrations=[AioHttpIntegration(), FlaskIntegration(), sentry_logging],
     )
 
 initializeDB(bot)
-
-
-# Creating a slash command in discord.py
-@bot.tree.command(name="ask", description="Ask a question", guild=discord.Object(id=1143709921326682182))
-async def ask(interaction: discord.Interaction, *, question: str):
-    """if interaction.channel_id != 1216431006031282286:
-        return await interaction.response.send_message("lil bro, you can't use this command here. take your ass to <#1216431006031282286>")"""
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo-0125",
-        messages=[
-            {"role": "system",
-             "content": "respond passive aggressively"},
-            {"role": "user", "content": question}
-        ]
-    )
-    await interaction.response.send_message(response.choices[0].message.content)
-
-
-@bot.command()
-@is_botAdmin2
-async def sayvc(ctx: commands.Context, *, text=None):
-    if 1 == 1:
-        await ctx.message.delete()
-
-        if not text:
-            # We have nothing to speak
-            await ctx.send(f"Hey {ctx.author.mention}, I need to know what to say please.")
-            return
-
-        vc = ctx.voice_client  # We use it more then once, so make it an easy variable
-        if not vc:
-            # We are not currently in a voice channel
-            await ctx.send("I need to be in a voice channel to do this, please use the connect command.")
-            return
-
-        # Lets prepare our text, and then save the audio file
-        tts = gTTS(text=text, lang="en")
-        tts.save("text.mp3")
-
-        try:
-            # Lets play that mp3 file in the voice channel
-            vc.play(discord.FFmpegPCMAudio('text.mp3'), after=lambda e: print(f"Finished playing: {e}"))
-
-            # Lets set the volume to 1
-            vc.source = discord.PCMVolumeTransformer(vc.source)
-            vc.source.volume = 1
-
-        # Handle the exceptions that can occur
-        except discord.ClientException as e:
-            await ctx.send(f"A client exception occured:\n`{e}`")
-
-        except TypeError as e:
-            await ctx.send(f"TypeError exception:\n`{e}`")
-    else:
-        await ctx.send("You do not have permission to use this command.")
-
-
-@bot.tree.context_menu(name="How do I verify?", guild=discord.Object(id=1143709921326682182))
-async def verify_info(interaction: discord.Interaction, message: discord.Message):
-    msg = await officer_check(interaction.guild, interaction.user, interaction)
-    if not msg:
-        await message.reply(
-            f"A: **Is it really that hard to check the pinned messages?**\n> You can verify yourself by running /verify in <#1205691124543389787>.\nIf you are already a member, you can run /update in <#1143717377738022992>.\n\n**Next time check the pinned messages: https://discord.com/channels/1143709921326682182/1183227413476417587/1183228010967609524**\nSent from: {interaction.user.mention}")
-    await interaction.response.send_message("1 idiot's question answered.", ephemeral=True)
-
-@bot.tree.context_menu(name="How do I join/get the clan code?", guild=discord.Object(id=1143709921326682182))
-async def join_clan_code(interaction: discord.Interaction, message: discord.Message):
-    msg = await officer_check(interaction.guild, interaction.user, interaction)
-    if not msg:
-        await message.reply(
-            f"A: **Is it really that hard to check the pinned messages?**\n> To join The Arasaka Corporation, you have to complete the steps in our application channel (<#1183769117380050976>) and join 4 events. If you are accepted and do everything correctly, you will receive the Junior Operative rank and be DM'ed the clan code at the end of the week.\n\n**Next time check the pinned messages: https://discord.com/channels/1143709921326682182/1183227413476417587/1183228010967609524**\nSent from: {interaction.user.mention}")
-    await interaction.response.send_message("1 idiot's question answered.", ephemeral=True)
-
-@bot.tree.context_menu(name="How often are apps checked?", guild=discord.Object(id=1143709921326682182))
-async def applications_checked(interaction: discord.Interaction, message: discord.Message):
-    msg = await officer_check(interaction.guild, interaction.user, interaction)
-    if not msg:
-        await message.reply(
-            f"A: **Is it really that hard to check the pinned messages?**\n> Applications are checked by HICOM within 48 hours after they are sent. Please be patient as we may be busy. Constantly asking about your application will not speed up the process.\n\n**Next time check the pinned messages: https://discord.com/channels/1143709921326682182/1183227413476417587/1183228010967609524**\nSent from: {interaction.user.mention}")
-    await interaction.response.send_message("1 idiot's question answered.", ephemeral=True)
-
-@bot.tree.context_menu(name="How do I get promoted?", guild=discord.Object(id=1143709921326682182))
-async def promotion_issue(interaction: discord.Interaction, message: discord.Message):
-    msg = await officer_check(interaction.guild, interaction.user, interaction)
-    if not msg:
-        await message.reply(
-            f"A: **Is it really that hard to check the pinned messages?**\n> Submit a promotion request in <#1225898217833496697> with the required information through the command. Read the pinned messages for more help.\n\n**Next time check the pinned messages: https://discord.com/channels/1143709921326682182/1183227413476417587/1183228010967609524**\nSent from: {interaction.user.mention}")
-    await interaction.response.send_message("1 idiot's question answered.", ephemeral=True)
-
-@bot.tree.context_menu(name="How do I become an officer?", guild=discord.Object(id=1143709921326682182))
-async def become_officer(interaction: discord.Interaction, message: discord.Message):
-    msg = await officer_check(interaction.guild, interaction.user, interaction)
-    if not msg:
-        await message.reply(
-            f"A: **Is it really that hard to check the pinned messages?**\n> To join the Officer Corps, you must be A-2+ and apply when applications are open. These are open around once every 2 months.\n\n**Next time check the pinned messages: https://discord.com/channels/1143709921326682182/1183227413476417587/1183228010967609524**\nSent from: {interaction.user.mention}")
-    await interaction.response.send_message("1 idiot's question answered.", ephemeral=True)
-
-@bot.command()
-async def connect(ctx, vc_id):
-    try:
-        ch = await bot.fetch_channel(vc_id)
-        await ch.connect()
-    except:
-        await ctx.send("not a channel noob")
-    else:
-        await ctx.send("connected")
-
 
 if __name__ == "__main__":
     bot.run(os.getenv("TOKEN"))

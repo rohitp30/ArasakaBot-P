@@ -4,7 +4,6 @@ from datetime import datetime
 
 import pytz
 from dotenv import load_dotenv
-from flask import Flask
 from peewee import (
     AutoField,
     BigIntegerField,
@@ -21,9 +20,6 @@ from core.logging_module import get_log
 
 load_dotenv()
 _log = get_log(__name__)
-
-
-
 """
 Change to a SqliteDatabase if you don't have any MySQL Credentials.
 If you do switch, comment/remove the MySQLDatabase variable and uncomment/remove the # from the SqliteDatabase instance. 
@@ -201,186 +197,9 @@ class CheckInformation(BaseModel):
     PersistantChange = BooleanField()
 
 
-class Warns(BaseModel):
-    """
-    # Warns:
-    List of users who are warned on the bot.
+# DiscordToRoblox table has been removed as it's no longer used
+# Discord to Roblox linking is now handled by Blox.link API
 
-    `id`: AutoField()
-    Database Entry
-
-    `discord_id`: BigIntegerField()
-    Discord ID
-
-    `warn_reason`: IntegerField()
-    Number of warns
-    """
-
-    id = AutoField()
-    discord_id = BigIntegerField(unique=False)
-    moderator_id = BigIntegerField()
-    warn_reason = TextField(default="No reason given.")
-    datetime = DateTimeField(default=time.time())
-
-
-class EventAnalytics(BaseModel):
-    """
-    # EventAnalytics
-
-    `id`: AutoField()
-    Database Entry | Event ID
-
-    `event_id`: BigIntegerField()
-    The event ID.
-
-    `author_id`: BigIntegerField()
-    The author of the event.
-
-    `event_type`: TextField()
-    The user who reacted to the event.
-
-    `initial_reaction_count`: IntegerField()
-    The initial reaction count of the event.
-
-    `cancelled`: BooleanField()
-    If the event was cancelled. | This doesn't apply to events that were cancelled before/during stage 0.
-    > Canceled is defined as the event being cancelled during stage 1 where the `End Event` button was clicked before the prep time ended.
-    """
-
-    id = AutoField()
-    event_id = BigIntegerField()
-    author_id = BigIntegerField()
-    event_type = TextField()
-    initial_reaction_count = IntegerField()
-    created_at = DateTimeField(default=datetime.now(tz=pytz.timezone("America/New_York")))
-    end_at = DateTimeField(null=True)
-    duration = IntegerField(null=True)
-    cancelled = BooleanField(default=False)
-
-
-
-
-class EventBlacklist(BaseModel):
-    """
-    # EventBlacklist
-
-    `id`: AutoField()
-    Database Entry ID
-
-    `user_id`: BigIntegerField()
-    The user ID of the user who is blacklisted from events.
-
-    `reason`: TextField()
-    The reason for the blacklist.
-    """
-
-    id = AutoField()
-    user_id = BigIntegerField()
-    reason = TextField()
-
-
-class AutoRole(BaseModel):
-    """
-    # AutoRole
-
-    `id`: AutoField()
-    Database Entry ID
-
-    `role_id`: BigIntegerField()
-    The role ID of the role.
-
-    `name`: TextField()
-    The name of the event this role is related to.
-    """
-
-    id = AutoField()
-    role_id = BigIntegerField()
-    name = TextField()
-
-
-class DiscordToRoblox(BaseModel):
-    """
-    # DiscordToRoblox
-
-    `id`: AutoField()
-    Database Entry ID
-
-    `discord_id`: BigIntegerField()
-    The discord ID of the user.
-
-    `roblox_username`: TextField()
-    The roblox ID of the user.
-    """
-
-    id = AutoField()
-    discord_id = BigIntegerField()
-    roblox_username = TextField()
-
-
-class EventsHosted(BaseModel):
-    """
-    # EventsHosted
-
-    `id`: AutoField()
-    Database Entry ID
-
-    `discord_id`: BigIntegerField()
-    The discord ID of the host.
-
-    `host_username`: TextField()
-    The username of the host.
-
-    `co_host_username`: TextField()
-    The username of the co-host.
-
-    `supervisor_username`: TextField()
-    The username of the supervisor.
-
-    `attendees`: TextField()
-    The attendees of the event.
-
-    `event_type`: TextField()
-    The type of event hosted.
-
-    `xp_awarded`: FloatField()
-    The amount of XP awarded.
-
-    `datetime`: DateTimeField()
-    The date and time the event was hosted.
-
-    `wedge_picture`: TextField()
-    The URL of the wedge picture.
-    """
-    id = AutoField()
-    discord_id = BigIntegerField()
-    host_username = TextField()
-    co_host_username = TextField(null=True)
-    supervisor_username = TextField(null=True)
-    attendees = TextField()
-    event_type = TextField()
-    xp_awarded = FloatField()
-    datetime = DateTimeField(default=datetime.utcnow())
-    wedge_picture = TextField()
-    is_active = BooleanField(default=True)
-
-
-class LastCount(BaseModel):
-    """
-    # LastCount
-    A simple table to store the last number of the counting challenge.
-
-    `id`: AutoField()
-    Database Entry ID
-
-    `last_number`: IntegerField()
-    The last number of the counting challenge.
-
-    `last_counted_by`: BigIntegerField()
-    The user ID of the last person who counted.
-    """
-    id = AutoField()
-    last_number = IntegerField(default=0)
-    last_counted_by = BigIntegerField(default=0)
 
 class EventLoggingRecords(BaseModel):
     """
@@ -413,26 +232,54 @@ class EventLoggingRecords(BaseModel):
     event_type = TextField()
     xp_awarded = FloatField()
     datetime_object = DateTimeField(default=datetime.now(tz=pytz.timezone("America/New_York")), null=False)
-app = Flask(__name__)
 
 
-@app.before_request
-def _db_connect():
+class EventQuota(BaseModel):
     """
-    This hook ensures that a connection is opened to handle any queries
-    generated by the request.
+    # EventQuota
+    A table to store event quotas. (For /xp view)
+
+    `id`: AutoField()
+    Database Entry ID
+
+    `host_id`: BigIntegerField()
+    The user ID of the host.
+
+    `event_type`: TextField()
+    The type of event hosted.
+
+    `datetime_object`: DateTimeField()
+    The date and time the event was hosted.
     """
-    db.connect()
+
+    id = AutoField()
+    host_id = BigIntegerField()
+    event_type = TextField()
+    datetime_object = DateTimeField(default=datetime.now(tz=pytz.timezone("America/New_York")), null=False)
 
 
-@app.teardown_request
-def _db_close(exc):
+class MaintenanceMode(BaseModel):
     """
-    This hook ensures that the connection is closed when we've finished
-    processing the request.
+    # Maintenance
+    A table to store maintenance records.
+
+    `id`: AutoField()
+    Database Entry ID
+
+    `enabled`: BooleanField()
+    Indicates if the maintenance mode is enabled or not.
+
+    `start_time`: DateTimeField()
+    The start time of the maintenance.
+
+    `reason`: TextField()
+    The reason for the maintenance.
     """
-    if not db.is_closed():
-        db.close()
+
+    id = AutoField()
+    enabled = BooleanField(default=False)
+    start_time = DateTimeField(default=datetime.now(tz=pytz.timezone("America/New_York")), null=False)
+    reason = TextField(null=True)
 
 
 tables = {
@@ -441,14 +288,9 @@ tables = {
     "Blacklist": Blacklist,
     "CommandAnalytics": CommandAnalytics,
     "CheckInformation": CheckInformation,
-    "Warns": Warns,
-    "EventAnalytics": EventAnalytics,
-    "EventBlacklist": EventBlacklist,
-    "AutoRole": AutoRole,
-    "DiscordToRoblox": DiscordToRoblox,
-    "EventsHosted": EventsHosted,
-    "LastCount": LastCount,
     "EventLoggingRecords": EventLoggingRecords,
+    "EventQuota": EventQuota,
+    "MaintenanceMode": MaintenanceMode,
 }
 
 """
