@@ -1,6 +1,7 @@
 import sys
 import time
-from datetime import timedelta
+import pytz
+from datetime import timedelta, datetime
 
 import discord
 import psutil
@@ -8,11 +9,12 @@ from discord import app_commands
 from discord.ext import commands
 
 from core import database
-from core.checks import is_botAdmin4, slash_is_bot_admin_3
+from core.checks import is_botAdmin4, slash_is_bot_admin_3, slash_is_bot_admin_4
 from core.logging_module import get_log
-from core.common import LoggingChannels
+from core.common import LoggingChannels, OpenAIClient
 
 _log = get_log(__name__)
+client = OpenAIClient().client
 
 class MiscCMD(commands.Cog):
     def __init__(self, bot: "ArasakaCorpBot"):
@@ -139,9 +141,52 @@ class MiscCMD(commands.Cog):
         else:
             await interaction.response.send_message("No permission to view the help page. | *This bot is for officers only.*")
 
+    # Creating a slash command in discord.py
+    @app_commands.command(name="ask", description="Ask a question")
+    @app_commands.guilds(LoggingChannels.guild)
+    async def ask(interaction: discord.Interaction, *, question: str):
+        """if interaction.channel_id != 1216431006031282286:
+            return await interaction.response.send_message("lil bro, you can't use this command here. take your ass to <#1216431006031282286>")"""
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo-0125",
+            messages=[
+                {"role": "system",
+                 "content": "respond passive aggressively"},
+                {"role": "user", "content": question}
+            ]
+        )
+        await interaction.response.send_message(response.choices[0].message.content)
 
+    @app_commands.command(name="maintenance", description="Toggle maintenance mode")
+    @app_commands.guilds(LoggingChannels.guild)
+    @slash_is_bot_admin_4()
+    async def maintenance(self, interaction: discord.Interaction, reason: str):
+        # Get the current maintenance status
+        query: database.MaintenanceMode = database.MaintenanceMode.select().where(database.MaintenanceMode.id == 1)
+        if not query.exists():
+            query = database.MaintenanceMode.create(enabled=False, reason="No reason provided.")
 
+        query = query.get()
+        # Toggle the maintenance mode
+        query.enabled = not query.enabled
+        query.reason = reason
+        query.start_time = datetime.now(tz=pytz.timezone("America/New_York"))
+        query.save()
 
+        # Log the action
+        NE = database.AdminLogging.create(
+            discordID=interaction.user.id, 
+            action="MAINTENANCE", 
+            content=f"Maintenance mode {'enabled' if query.enabled else 'disabled'}"
+        )
+        NE.save()
+
+        # Send a response
+        await interaction.response.send_message(
+            f"Maintenance mode {'enabled' if query.enabled else 'disabled'}. "
+            f"{'Only bot owners can use commands now.' if query.enabled else 'All users can use commands now.'}",
+            ephemeral=True
+        )
 
 
 async def setup(bot: commands.Bot):

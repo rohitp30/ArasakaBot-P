@@ -1,34 +1,31 @@
-import os
-import typing
 from datetime import datetime
 
 import discord
 from discord import app_commands
 from discord.ext import commands
-from roblox import Client
 from sentry_sdk import start_transaction
 
 from core import database
 from core.common import (
-    get_user_xp_data, RankHierarchy, ConfirmationView,
-    PromotionButtons, InactivityModal, DischargeModel, retrieve_discord_user,
+    get_user_xp_data, retrieve_discord_user,
     ArasakaRanks, SheetsClient
 )
 from core.logging_module import get_log
-from utils.event_logging import XP
 
 _log = get_log(__name__)
 sheet = SheetsClient().sheet
 
-
-
 class EventViewing(commands.Cog):
     def __init__(self, bot: "ArasakaCorpBot"):
         self.bot: "ArasakaCorpBot" = bot
-        self.ROBLOX_client = Client(os.getenv("ROBLOX_SECURITY"))
         self.group_id = 33764698
         self.interaction = []
 
+    XP = app_commands.Group(
+        name="xp_view",
+        description="View XP and rank information.",
+        guild_ids=[1223473430410690630, 1143709921326682182],
+    )
 
     @XP.command(
         name="view",
@@ -55,63 +52,57 @@ class EventViewing(commands.Cog):
                 return await interaction.response.send_message(embed=confirmation_embed, ephemeral=True)
             await interaction.response.defer(thinking=True)
 
+            # Create a RobloxDiscordLinker instance
+            from core.common import RobloxDiscordLinker
+            linker = RobloxDiscordLinker(self.bot, interaction.guild_id, sheet)
+
+            # Determine the target user
             if roblox_username:
-                target_user = roblox_username
+                target_name = roblox_username
             elif target_user:
-                target_user = target_user
+                # Try to get the Roblox username for the Discord user
+                roblox_name = await linker.discord_id_to_roblox_username(target_user.id)
+                target_name = roblox_name if roblox_name else target_user.display_name
             else:
-                target_user = interaction.user
+                # Try to get the Roblox username for the interaction user
+                roblox_name = await linker.discord_id_to_roblox_username(interaction.user.id)
+                target_name = roblox_name if roblox_name else interaction.user.display_name
+
             promoted = False
 
-            if isinstance(target_user, discord.Member) or isinstance(target_user, discord.User):
-                user_data = await get_user_xp_data(target_user.display_name, sheet)
-                if not user_data:
-                    query = database.DiscordToRoblox.select().where(
-                        database.DiscordToRoblox.discord_id == target_user.id
-                    )
-                    if query.exists():
-                        query = query.get()
-                        roblox_username = query.roblox_username
-                        user_data = await get_user_xp_data(roblox_username, sheet)
-                        if user_data is None:
-                            confirmation_embed = discord.Embed(
-                                color=discord.Color.brand_red(),
-                                title="Unknown Roblox Username",
-                                description=f"Hey {interaction.user.mention}, I couldn't find the roblox username for data for "
-                                            f"the user you specified."
-                            )
-                            confirmation_embed.add_field(
-                                name="Resolutions",
-                                value="Your DISCORD Username is *clearly* not your Roblox username. Use the `roblox_username` field in the slash command to find yourself/whoever."
-                            )
-                            return await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
+            # Get user data using the linker
+            user_data = await linker.get_user_xp_data(target_name)
 
-                    else:
-                        confirmation_embed = discord.Embed(
-                            color=discord.Color.brand_red(),
-                            title="Unknown Roblox Username",
-                            description=f"Hey {interaction.user.mention}, I couldn't find the roblox username for data for "
-                                        f"the user you specified."
-                        )
-                        confirmation_embed.add_field(
-                            name="Resolutions",
-                            value="Your DISCORD Username is *clearly* not your Roblox username. Use the `roblox_username` field in the slash command to find yourself/whoever."
-                        )
-                        return await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
+            # If not found and target is a Discord member, try with their display name
+            if not user_data and isinstance(target_user, (discord.Member, discord.User)):
+                user_data = await linker.get_user_xp_data(target_user.display_name)
+
+            # If still not found, try with the interaction user's display name
+            if not user_data and not target_user and not roblox_username:
+                user_data = await linker.get_user_xp_data(interaction.user.display_name)
+
+            # If still not found, return an error message
+            if not user_data:
+                confirmation_embed = discord.Embed(
+                    color=discord.Color.brand_red(),
+                    title="User Not Found",
+                    description=f"Hey {interaction.user.mention}, I couldn't find data for the user you specified."
+                )
+                confirmation_embed.add_field(
+                    name="Resolutions",
+                    value="1. Make sure the username is correct.\n"
+                          "2. If you're looking for yourself, try using the `roblox_username` field with your Roblox username.\n"
+                          "3. If you're looking for someone else, try mentioning them or using their Roblox username."
+                )
+                return await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
+
+            # For display purposes, determine the name to show
+            if isinstance(target_user, (discord.Member, discord.User)):
+                display_name = target_user.display_name
+            elif roblox_username:
+                display_name = roblox_username
             else:
-                user_data = await get_user_xp_data(target_user, sheet)
-                if user_data is None:
-                    confirmation_embed = discord.Embed(
-                        color=discord.Color.brand_red(),
-                        title="Unknown Roblox Username",
-                        description=f"Hey {interaction.user.mention}, I couldn't find the roblox username for data for "
-                                    f"the user you specified."
-                    )
-                    confirmation_embed.add_field(
-                        name="Resolutions",
-                        value="Your DISCORD Username is *clearly* not your Roblox username. Use the `roblox_username` field in the slash command to find yourself/whoever."
-                    )
-                    return await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
+                display_name = interaction.user.display_name
 
             current_rank_full_name = user_data['rank']
             total_xp = user_data['total_xp']
@@ -200,17 +191,14 @@ class EventViewing(commands.Cog):
                         else f"⬛ **{weekly_xp}**/{quota_req} WP"
                     )
             # Build the embed
-            if isinstance(target_user, discord.Member) or isinstance(target_user, discord.User):
-                target_user = target_user.display_name
-            else:
-                target_user = target_user
-
             embed = discord.Embed(
-                title=f"{target_user}'s XP Progress",
+                title=f"{display_name}'s XP Progress",
                 color=discord.Color.blue()
             )
             embed.add_field(name="Current Rank", value=current_rank_full_name, inline=False)
-            embed.add_field(name="Next Rank", value=next_rank_name, inline=False)
+            embed.add_field(name="Next Rank", value=next_rank_name, inline=True)
+            if user_data["division"] != "N/A":
+                embed.add_field(name="Division", value=f"**{user_data["division"]}**", inline=True)
             embed.add_field(name="Progress", value=progress_bar, inline=False)
             embed.add_field(name="Met Quota?", value=quota, inline=False)
             if promoted:
@@ -224,18 +212,31 @@ class EventViewing(commands.Cog):
                           "https://discord.com/channels/1143709921326682182/1225898217833496697/1226349662752211004",
                     inline=False)
 
-            # Build base filter:
+            # Build base filter using both display_name and target_name
             base_filter = (
-                    (database.EventLoggingRecords.host_username == target_user) |
-                    (database.EventLoggingRecords.attendee_username == target_user)
+                    (database.EventLoggingRecords.host_username == display_name) |
+                    (database.EventLoggingRecords.attendee_username == display_name)
             )
-            if roblox_username:
-                possible_id = retrieve_discord_user(roblox_username, self.bot, interaction.guild_id, sheet)
-                if isinstance(possible_id, int):
-                    base_filter |= (
-                            (database.EventLoggingRecords.attendee_id == possible_id) |
-                            (database.EventLoggingRecords.host_id == possible_id)
-                    )
+
+            # If target_name is different from display_name, include it in the filter
+            if target_name != display_name:
+                base_filter |= (
+                    (database.EventLoggingRecords.host_username == target_name) |
+                    (database.EventLoggingRecords.attendee_username == target_name)
+                )
+
+            # Include Discord ID in the filter if available
+            discord_id = None
+            if isinstance(target_user, (discord.Member, discord.User)):
+                discord_id = target_user.id
+            elif not target_user and not roblox_username:
+                discord_id = interaction.user.id
+
+            if discord_id:
+                base_filter |= (
+                    (database.EventLoggingRecords.attendee_id == discord_id) |
+                    (database.EventLoggingRecords.host_id == discord_id)
+                )
 
             # 2) Query distinct rows and get total count
             base_query = (
@@ -304,177 +305,49 @@ class EventViewing(commands.Cog):
 
     @XP.command(
         name="link",
-        description="Link your Discord account with your Roblox account."
+        description="Information about linking your Discord account with your Roblox account."
     )
     @app_commands.describe(
-        roblox_username="Enter your Roblox username to link your Discord account with it."
+        roblox_username="This parameter is no longer used. Please read the information provided."
     )
     async def _link(
             self,
             interaction: discord.Interaction,
-            roblox_username: str,
+            roblox_username: str = None,
     ):
-        await interaction.response.defer(ephemeral=True)
-        query = database.DiscordToRoblox.select().where(
-            database.DiscordToRoblox.discord_id == interaction.user.id
-        )
-        if query.exists():
-            query = query.get()
-            query.roblox_username = roblox_username
-            query.save()
+        with start_transaction(op="command", name=f"cmd/{interaction.command.name}"):
+            await interaction.response.defer(ephemeral=True)
 
-            confirmation_embed = discord.Embed(
-                color=discord.Color.green(),
-                title="Link Updated!",
-                description=f"Hey {interaction.user.mention}, your Discord account has been successfully updated with the "
-                            f"Roblox account `{roblox_username}`."
-            )
-            await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
-
-        else:
-            query = database.DiscordToRoblox.create(
-                discord_id=interaction.user.id,
-                roblox_username=roblox_username
-            )
-            query.save()
-
-            confirmation_embed = discord.Embed(
-                color=discord.Color.green(),
-                title="Link Successful!",
-                description=f"Hey {interaction.user.mention}, your Discord account has been successfully linked with the "
-                            f"Roblox account `{roblox_username}`."
-            )
-            await interaction.followup.send(embed=confirmation_embed, ephemeral=True)
-
-
-    @XP.command(
-        name="request_rank_change",
-        description="Need a rank update in the group? Use this command to request a rank change!"
-    )
-    # @app_commands.guilds(1223473430410690630, 1143709921326682182)
-    async def request_rank_change(
-            self,
-            interaction: discord.Interaction,
-            rank_requesting: str,
-    ):
-        return await interaction.response.send_message("Not in operation...")
-        await interaction.response.defer(ephemeral=True, thinking=True)
-
-        rank_obj = RankHierarchy(self.group_id, sheet)
-        group = await self.ROBLOX_client.get_group(self.group_id)
-        r_user = rank_obj.discord_to_roblox(interaction.user.id, group)
-        regular_user = await self.ROBLOX_client.get_user(r_user.id)
-        user_rank = await rank_obj.get_rank(regular_user.name)
-
-        user_data = await get_user_xp_data(regular_user.name, sheet)
-
-        """
-        Username:
-        Current Rank:
-        Current XP: 
-        Rank requesting: 
-        Proof of your XP: (Must contain the full pillar: Username, WP, TP, etc.) 
-        """
-
-        username = regular_user.name
-        print(username)
-        current_rank = user_rank
-        current_xp = user_data['total_xp']
-        rank_requesting = rank_requesting
-        proof_of_xp = f"Column Readout: {username}, {str(user_data['total_xp'])} TP, {str(user_data['weekly_xp'])} WP"
-
-        xp_needed = rank_xp_thresholds.get(rank_requesting, 0) - current_xp
-        if xp_needed > 0:
-            xp_field = f"❌ | {xp_needed} more XP needed for {rank_requesting}."
-        else:
-            xp_field = f"✅ | Met the XP requirement for {rank_requesting}."
-
-        embed = discord.Embed(
-            title="Rank Change Request",
-            description="Please review the information below and confirm that you would like to submit this request.",
-            color=discord.Color.blue()
-        )
-        embed.add_field(name="Username", value=username)
-        embed.add_field(name="Current Rank", value=current_rank)
-        embed.add_field(name="Current XP", value=current_xp)
-        embed.add_field(name="Rank Requested", value=rank_requesting)
-        embed.add_field(name="Proof of XP", value=proof_of_xp)
-        embed.add_field(name="XP Requirement", value=xp_field)
-        embed.set_footer(text="Please confirm that you would like to submit this request.")
-
-        view = ConfirmationView()
-        message: discord.WebhookMessage = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
-
-        await view.wait()
-        if view.value is None:
-            return await message.edit(content="Request cancelled.", view=None, embed=embed)
-
-        if view.value is True:
-            log_channel = self.bot.get_channel(1225898217833496697)
-            log_embed = discord.Embed(
-                title="Rank Change Request",
-                description=f"Requested by {interaction.user.mention}",
-                color=discord.Color.blue()
+            # Create an informative embed about Blox.link
+            info_embed = discord.Embed(
+                color=discord.Color.blue(),
+                title="Discord ↔ Roblox Account Linking",
+                description=f"Hey {interaction.user.mention}, we now use Blox.link for Discord to Roblox account linking."
             )
 
-            log_embed.add_field(name="Username", value=username)
-            log_embed.add_field(name="Current Rank", value=current_rank)
-            log_embed.add_field(name="Current XP", value=current_xp)
-            log_embed.add_field(name="Rank Requested", value=rank_requesting)
-            log_embed.add_field(name="Proof of XP", value=proof_of_xp)
-            log_embed.set_footer(text=f"Requested by: {interaction.user.display_name} | RANK CHANGE REQUEST")
-            await log_channel.send(embed=log_embed, view=PromotionButtons(self.bot))
+            info_embed.add_field(
+                name="How to Link Your Accounts",
+                value="1. Join the Blox.link Discord server: https://discord.gg/bloxlink\n"
+                      "2. Follow their instructions to link your Discord and Roblox accounts\n"
+                      "3. Once linked, your Roblox account will be automatically recognized by our bot",
+                inline=False
+            )
 
-            await message.edit(content="Request submitted successfully.", view=None, embed=embed)
-        else:
-            await message.edit(content="Request cancelled.", view=None, embed=embed)
+            info_embed.add_field(
+                name="Benefits of Using Blox.link",
+                value="- More secure and reliable linking\n"
+                      "- Works across multiple Discord servers\n"
+                      "- Automatic verification of Roblox account ownership",
+                inline=False
+            )
 
-    @request_rank_change.autocomplete('rank_requesting')
-    async def request_rank_change_autocomplete(
-            self,
-            interaction: discord.Interaction,
-            current: str,
-    ) -> typing.List[app_commands.Choice[str]]:
-        raw_ranks = [
-            "[N-3] Commander",
-            "[N-2] Command Sergeant",
-            "[N-1] Sergeant",
-            "[A-5] Senior Agent",
-            "[A-4] Specialist",
-            "[A-3] Operative",
-            "[A-2] Junior Operative",
-            "[A-1] Initiate",
-            "Civilian"  # Lowest
-        ]
+            info_embed.add_field(
+                name="Need Help?",
+                value="If you're having trouble with Blox.link, please contact a server administrator for assistance.",
+                inline=False
+            )
 
-        return [
-            app_commands.Choice(name=rank, value=rank)
-            for rank in raw_ranks if current.lower() in rank.lower()
-        ]
-
-    @XP.command(
-        name="request_inactivity_notice",
-        description="Submit an inactivity notice if you'll be temporarily unavailable."
-    )
-    async def request_inactivity(
-            self,
-            interaction: discord.Interaction
-    ):
-        # Creating and sending a modal to collect inactivity details
-        modal = InactivityModal(self.bot)
-        await interaction.response.send_modal(modal)
-
-    @XP.command(
-        name="request_discharge",
-        description="Submit a discharge request if you'd like to leave."
-    )
-    async def request_discharge(
-            self,
-            interaction: discord.Interaction
-    ):
-        # Creating and sending a modal to collect discharge details
-        modal = DischargeModel(self.bot)
-        await interaction.response.send_modal(modal)
+            await interaction.followup.send(embed=info_embed, ephemeral=True)
 
     @XP.command(
         name="rank_information",
@@ -485,32 +358,33 @@ class EventViewing(commands.Cog):
             interaction: discord.Interaction,
             current_xp: int = None
     ):
-        embed = discord.Embed(
-            title="Arasaka Rank Information",
-            color=discord.Color.blue()
-        )
-        for rank, threshold in ArasakaRanks.rank_xp_thresholds.items():
-            if current_xp is not None:
-                if current_xp >= threshold:
-                    progress_detail = "✅"  # Checkmark if XP is above or equal to threshold
-                else:
-                    remaining_xp = threshold - current_xp
-                    progress_percentage = int((current_xp / threshold) * 10)
-                    filled_slots = '🟥' * progress_percentage
-                    empty_slots = '⬛' * (10 - progress_percentage)
-                    progress_bar = filled_slots + empty_slots
-                    progress_detail = f"{progress_bar} | {remaining_xp} XP to reach"
-                value = f"*XP Requirement:* {threshold} XP\n*Progress:* {progress_detail}"
-            else:
-                value = f"*XP Requirement:* {threshold} XP"
-
-            embed.add_field(
-                name=rank,
-                value=value,
-                inline=False
+        with start_transaction(op="command", name=f"cmd/{interaction.command.name}"):
+            embed = discord.Embed(
+                title="Arasaka Rank Information",
+                color=discord.Color.blue()
             )
+            for rank, threshold in ArasakaRanks.rank_xp_thresholds.items():
+                if current_xp is not None:
+                    if current_xp >= threshold:
+                        progress_detail = "✅"  # Checkmark if XP is above or equal to a threshold
+                    else:
+                        remaining_xp = threshold - current_xp
+                        progress_percentage = int((current_xp / threshold) * 10)
+                        filled_slots = '🟥' * progress_percentage
+                        empty_slots = '⬛' * (10 - progress_percentage)
+                        progress_bar = filled_slots + empty_slots
+                        progress_detail = f"{progress_bar} | {remaining_xp} XP to reach"
+                    value = f"*XP Requirement:* {threshold} XP\n*Progress:* {progress_detail}"
+                else:
+                    value = f"*XP Requirement:* {threshold} XP"
 
-        await interaction.response.send_message(embed=embed)
+                embed.add_field(
+                    name=rank,
+                    value=value,
+                    inline=False
+                )
+
+            await interaction.response.send_message(embed=embed)
 
 
 async def setup(bot: commands.Bot):
